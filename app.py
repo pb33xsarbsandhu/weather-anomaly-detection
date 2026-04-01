@@ -12,14 +12,11 @@ st.set_page_config(page_title="Weather Dashboard", layout="wide")
 # -----------------------------
 st.markdown("""
 <style>
-
-/* Background */
 .stApp {
     background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);
     color: white;
 }
 
-/* Title */
 h1 {
     text-align: center;
     font-size: 3rem;
@@ -29,35 +26,17 @@ h1 {
     -webkit-text-fill-color: transparent;
 }
 
-/* Sidebar */
 section[data-testid="stSidebar"] {
     background: rgba(255,255,255,0.05);
     backdrop-filter: blur(10px);
 }
 
-/* Metrics */
 [data-testid="metric-container"] {
     background: rgba(255,255,255,0.08);
     border-radius: 15px;
     padding: 15px;
     backdrop-filter: blur(10px);
-    box-shadow: 0px 4px 20px rgba(0,0,0,0.3);
 }
-
-/* Buttons */
-.stButton>button {
-    border-radius: 10px;
-    background: linear-gradient(45deg, #00C9A7, #92FE9D);
-    color: black;
-    font-weight: bold;
-}
-
-/* Spacing */
-.block-container {
-    padding-top: 2rem;
-    padding-bottom: 2rem;
-}
-
 </style>
 """, unsafe_allow_html=True)
 
@@ -65,31 +44,24 @@ section[data-testid="stSidebar"] {
 # TITLE
 # -----------------------------
 st.markdown("<h1>🌦️ Weather Anomaly Intelligence Dashboard</h1>", unsafe_allow_html=True)
-st.markdown("### 📊 Real-time insights into temperature & rainfall anomalies")
 
 # -----------------------------
-# SIDEBAR - DATA SOURCE
+# DATA SOURCE
 # -----------------------------
 st.sidebar.header("📂 Data Source")
 option = st.sidebar.radio("Choose Data Source", ["Use Default Dataset", "Upload CSV"])
 
-# -----------------------------
-# LOAD DATA
-# -----------------------------
 if option == "Use Default Dataset":
     try:
         data = pd.read_csv("weather.csv")
-        st.success("✅ Default dataset loaded successfully!")
     except:
-        st.error("❌ 'weather.csv' not found in folder")
+        st.error("weather.csv not found")
         st.stop()
 else:
     uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
-    if uploaded_file is not None:
+    if uploaded_file:
         data = pd.read_csv(uploaded_file)
-        st.success("✅ Uploaded dataset loaded!")
     else:
-        st.warning("Please upload a CSV file")
         st.stop()
 
 # -----------------------------
@@ -102,144 +74,122 @@ data.rename(columns={
 }, inplace=True)
 
 data['Date'] = pd.to_datetime(data['Date'], errors='coerce')
-data = data.dropna(subset=['Date', 'Temperature', 'Rainfall'])
+data['Temperature'] = pd.to_numeric(data['Temperature'], errors='coerce')
+data['Rainfall'] = pd.to_numeric(data['Rainfall'], errors='coerce')
+
+data = data.dropna()
 
 data['Month'] = data['Date'].dt.month
 
-def get_season(month):
-    if month in [12, 1, 2]:
-        return "Winter"
-    elif month in [3, 4, 5]:
-        return "Summer"
-    elif month in [6, 7, 8, 9]:
-        return "Monsoon"
-    else:
-        return "Post-Monsoon"
+def get_season(m):
+    return ("Winter" if m in [12,1,2] else
+            "Summer" if m in [3,4,5] else
+            "Monsoon" if m in [6,7,8,9] else
+            "Post-Monsoon")
 
 data['Season'] = data['Month'].apply(get_season)
 
 # -----------------------------
-# CALCULATIONS
+# ANOMALY DETECTION
 # -----------------------------
-monthly_avg = data.groupby('Month')[['Temperature', 'Rainfall']].mean()
-seasonal_avg = data.groupby('Season')[['Temperature', 'Rainfall']].mean()
+monthly_avg = data.groupby('Month')[['Temperature','Rainfall']].mean()
+seasonal_avg = data.groupby('Season')[['Temperature','Rainfall']].mean()
 
 def detect(row):
-    if abs(row['Temperature'] - monthly_avg.loc[row['Month'], 'Temperature']) > 5:
+    if abs(row['Temperature'] - monthly_avg.loc[row['Month'],'Temperature']) > 5:
         return "Temp Anomaly"
-    elif abs(row['Rainfall'] - monthly_avg.loc[row['Month'], 'Rainfall']) > 10:
+    elif abs(row['Rainfall'] - monthly_avg.loc[row['Month'],'Rainfall']) > 10:
         return "Rain Anomaly"
-    elif abs(row['Temperature'] - seasonal_avg.loc[row['Season'], 'Temperature']) > 5:
+    elif abs(row['Temperature'] - seasonal_avg.loc[row['Season'],'Temperature']) > 5:
         return "Temp Anomaly (Seasonal)"
-    elif abs(row['Rainfall'] - seasonal_avg.loc[row['Season'], 'Rainfall']) > 10:
+    elif abs(row['Rainfall'] - seasonal_avg.loc[row['Season'],'Rainfall']) > 10:
         return "Rain Anomaly (Seasonal)"
-    else:
-        return "Normal"
+    return "Normal"
 
 data['Status'] = data.apply(detect, axis=1)
 
 # -----------------------------
 # FILTERS
 # -----------------------------
-st.sidebar.header("🎛️ Filters")
+start = st.sidebar.date_input("Start Date", data['Date'].min())
+end = st.sidebar.date_input("End Date", data['Date'].max())
 
-if 'city' in data.columns:
-    cities = st.sidebar.multiselect("Select City", data['city'].unique(), default=data['city'].unique())
-    data = data[data['city'].isin(cities)]
+filtered = data[(data['Date']>=pd.to_datetime(start)) &
+                (data['Date']<=pd.to_datetime(end))].copy()
 
-start_date = st.sidebar.date_input("Start Date", data['Date'].min())
-end_date = st.sidebar.date_input("End Date", data['Date'].max())
-
-filtered_data = data[
-    (data['Date'] >= pd.to_datetime(start_date)) &
-    (data['Date'] <= pd.to_datetime(end_date))
-]
-
-# Fix warning
-filtered_data = filtered_data.copy()
+if len(filtered) < 3:
+    st.warning("Not enough data")
+    st.stop()
 
 # -----------------------------
-# METRICS
+# SMOOTHING
 # -----------------------------
-col1, col2, col3 = st.columns(3)
+filtered = filtered.sort_values("Date")
 
-col1.metric("🌡️ Avg Temperature", f"{filtered_data['Temperature'].mean():.2f} °C")
-col2.metric("🌧️ Total Rainfall", f"{filtered_data['Rainfall'].sum():.2f} mm")
-col3.metric("⚠️ Anomalies Detected", (filtered_data['Status'] != "Normal").sum())
+filtered['Temp_Smooth'] = filtered['Temperature'].rolling(window=3, min_periods=1).mean()
+filtered['Rain_Smooth'] = filtered['Rainfall'].rolling(window=3, min_periods=1).mean()
 
-# -----------------------------
-# INSIGHTS
-# -----------------------------
-st.markdown("### 🧠 Insights")
-
-if (filtered_data['Status'] != "Normal").sum() > 0:
-    st.warning("⚠️ Unusual weather patterns detected. Review highlighted anomalies.")
-else:
-    st.success("✅ Weather patterns are stable and normal.")
-
-st.markdown("---")
-
-# Highlight
-filtered_data['Highlight'] = filtered_data['Status'].apply(
+filtered['Highlight'] = filtered['Status'].apply(
     lambda x: "Anomaly" if "Anomaly" in x else "Normal"
 )
 
 # -----------------------------
+# METRICS
+# -----------------------------
+c1,c2,c3 = st.columns(3)
+c1.metric("🌡️ Avg Temp", f"{filtered['Temperature'].mean():.2f}°C")
+c2.metric("🌧️ Total Rain", f"{filtered['Rainfall'].sum():.2f} mm")
+c3.metric("⚠️ Anomalies", (filtered['Status']!="Normal").sum())
+
+# -----------------------------
 # TEMPERATURE GRAPH
 # -----------------------------
-st.markdown("## 🌡️ Temperature Analysis")
+st.subheader("🌡️ Temperature")
 
-fig1 = px.line(
-    filtered_data,
-    x='Date',
-    y='Temperature',
-    color='Highlight',
-    markers=True
+fig1 = px.line(filtered, x='Date', y='Temp_Smooth')
+fig1.update_traces(line=dict(width=4))
+
+fig1.add_scatter(
+    x=filtered[filtered['Highlight']=="Anomaly"]['Date'],
+    y=filtered[filtered['Highlight']=="Anomaly"]['Temp_Smooth'],
+    mode='markers',
+    marker=dict(size=8, color='red'),
+    name='Anomaly'
 )
 
-fig1.update_layout(
-    template="plotly_dark",
-    plot_bgcolor="rgba(0,0,0,0)",
-    paper_bgcolor="rgba(0,0,0,0)"
-)
-
+fig1.update_layout(template="plotly_dark")
 st.plotly_chart(fig1, use_container_width=True)
 
 # -----------------------------
-# RAINFALL GRAPH
+# RAIN GRAPH
 # -----------------------------
-st.markdown("## 🌧️ Rainfall Analysis")
+st.subheader("🌧️ Rainfall")
 
-fig2 = px.line(
-    filtered_data,
-    x='Date',
-    y='Rainfall',
-    color='Highlight',
-    markers=True
+fig2 = px.line(filtered, x='Date', y='Rain_Smooth')
+fig2.update_traces(line=dict(width=4))
+
+fig2.add_scatter(
+    x=filtered[filtered['Highlight']=="Anomaly"]['Date'],
+    y=filtered[filtered['Highlight']=="Anomaly"]['Rain_Smooth'],
+    mode='markers',
+    marker=dict(size=8, color='orange'),
+    name='Anomaly'
 )
 
-fig2.update_layout(
-    template="plotly_dark",
-    plot_bgcolor="rgba(0,0,0,0)",
-    paper_bgcolor="rgba(0,0,0,0)"
-)
-
+fig2.update_layout(template="plotly_dark")
 st.plotly_chart(fig2, use_container_width=True)
 
 # -----------------------------
-# ANOMALY CHART
+# ANOMALY BAR GRAPH
 # -----------------------------
-st.markdown("## ⚠️ Anomaly Insights")
+st.subheader("⚠️ Anomaly Distribution")
 
-anomaly_counts = filtered_data['Status'].value_counts().reset_index()
+anomaly_counts = filtered['Status'].value_counts().reset_index()
 anomaly_counts.columns = ['Status', 'Count']
 
-fig3 = px.bar(
-    anomaly_counts,
-    x='Status',
-    y='Count',
-    text='Count'
-)
+fig3 = px.bar(anomaly_counts, x='Status', y='Count', text='Count')
+
+fig3.update_traces(textposition='outside')
 
 fig3.update_layout(
     template="plotly_dark",
@@ -249,19 +199,17 @@ fig3.update_layout(
 
 st.plotly_chart(fig3, use_container_width=True)
 
-st.markdown("---")
-
 # -----------------------------
-# DATA TABLE
+# TABLE
 # -----------------------------
-st.subheader("📋 Processed Data")
-st.dataframe(filtered_data)
+st.subheader("📋 Data")
+st.dataframe(filtered)
 
 # -----------------------------
 # DOWNLOAD
 # -----------------------------
 st.download_button(
-    "⬇️ Download Result",
-    filtered_data.to_csv(index=False),
-    file_name="weather_analysis_result.csv"
+    "⬇️ Download CSV",
+    filtered.to_csv(index=False),
+    "result.csv"
 )
